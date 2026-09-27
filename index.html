@@ -198,6 +198,9 @@ import {
 
 const RESPONSE_TIMEOUT_MS = 2000;
 const LOG_LINES = 200;
+const DEVICE_ID_KEY = 'daly.deviceId';
+const AUTO_CONNECT_TIMEOUT_MS = 15000;
+const AUTO_RETRY_MS = 5000;
 
 const $ = (id) => document.getElementById(id);
 
@@ -206,6 +209,7 @@ let writeChar = null;
 let pollTimer = null;
 let pending = null; // { resolve, reject, timer }
 let queue = Promise.resolve();
+let watchAbort = null; // set while waiting for a remembered device to advertise
 const asm = new FrameAssembler();
 const stats = { ok: 0, bad: 0, timeout: 0 };
 
@@ -274,43 +278,142 @@ function request({ reg, count }) {
   return p;
 }
 
-async function connect() {
-  showError('');
+function useDevice(d) {
+  device = d;
+  device.addEventListener('gattserverdisconnected', onDisconnected);
+}
+
+function saveDeviceId(id) {
+  try { localStorage.setItem(DEVICE_ID_KEY, id); } catch {}
+}
+
+function loadDeviceId() {
+  try { return localStorage.getItem(DEVICE_ID_KEY); } catch { return null; }
+}
+
+// Connect button: while auto-connect is waiting, or with no device yet, open the chooser.
+async function onConnectClick() {
+  if (watchAbort) {
+    watchAbort.abort();
+    watchAbort = null;
+    device = null;
+  }
   if (!navigator.bluetooth) {
     showError('Web Bluetooth is not available. Use Chromium over localhost/HTTPS; on Linux enable chrome://flags/#enable-experimental-web-platform-features.');
     return;
   }
-  try {
-    if (!device) {
-      device = await navigator.bluetooth.requestDevice({
+  if (!device) {
+    try {
+      useDevice(await navigator.bluetooth.requestDevice({
         filters: [{ namePrefix: 'DL-' }, { services: [SERVICE] }],
         optionalServices: [SERVICE],
-      });
-      device.addEventListener('gattserverdisconnected', onDisconnected);
+      }));
+    } catch (err) {
+      if (err.name !== 'NotFoundError') showError(err.message); // NotFoundError = chooser cancelled
+      return;
     }
-    setStatus(`Connecting to ${device.name}…`, 'busy');
-    $('connectBtn').disabled = true;
-    const server = await device.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE);
-    const notifyChar = await service.getCharacteristic(NOTIFY_CHAR);
-    writeChar = await service.getCharacteristic(WRITE_CHAR);
-    notifyChar.addEventListener('characteristicvaluechanged', onNotify);
-    await notifyChar.startNotifications();
+  }
+  await connect();
+}
 
-    setStatus(`Connected to ${device.name}`, 'on');
-    $('connectBtn').hidden = true;
-    $('disconnectBtn').hidden = false;
-    $('intro').hidden = true;
-    $('dash').hidden = false;
-
-    await readInfo();
-    await poll();
+// On load, find a device this site was granted before and keep trying to connect.
+// getDevices() needs chrome://flags/#enable-web-bluetooth-new-permissions-backend.
+// watchAdvertisements() never fires on Linux, so it only shortens the wait where it works;
+// the retry loop is what actually connects.
+async function autoConnect() {
+  if (!navigator.bluetooth?.getDevices) return;
+  let known;
+  try {
+    known = await navigator.bluetooth.getDevices();
   } catch (err) {
-    if (err.name !== 'NotFoundError') showError(err.message); // NotFoundError = chooser cancelled
+    log('err', `getDevices failed: ${err.message}`);
+    return;
+  }
+  const savedId = loadDeviceId();
+  const d = known.find((k) => k.id === savedId) ?? known.find((k) => k.name?.startsWith('DL-'));
+  if (!d || device) return;
+  useDevice(d);
+
+  watchAbort = new AbortController();
+  const { signal } = watchAbort;
+  $('connectBtn').textContent = 'Choose device';
+  let wake = null;
+  if (d.watchAdvertisements) {
+    d.addEventListener('advertisementreceived', () => wake?.(), { signal });
+    d.watchAdvertisements({ signal }).catch((err) => log('err', `watchAdvertisements: ${err.message}`));
+  }
+
+  for (let attempt = 1; !signal.aborted; attempt++) {
+    setStatus(`Looking for ${d.name}… (attempt ${attempt})`, 'busy');
+    try {
+      await withTimeout(openGatt(d), AUTO_CONNECT_TIMEOUT_MS, 'connect timed out');
+      if (signal.aborted) {
+        d.gatt.disconnect();
+        return;
+      }
+      watchAbort.abort();
+      watchAbort = null;
+      await onConnected();
+      return;
+    } catch (err) {
+      if (signal.aborted) return;
+      log('err', `auto-connect attempt ${attempt}: ${err.message}`);
+      if (d.gatt.connected) d.gatt.disconnect();
+    }
+    await new Promise((resolve) => {
+      wake = resolve;
+      setTimeout(resolve, AUTO_RETRY_MS);
+      signal.addEventListener('abort', resolve, { once: true });
+    });
+    wake = null;
+  }
+}
+
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+// Opens GATT and subscribes to notifications; throws on failure.
+async function openGatt(d) {
+  const server = await d.gatt.connect();
+  const service = await server.getPrimaryService(SERVICE);
+  const notifyChar = await service.getCharacteristic(NOTIFY_CHAR);
+  writeChar = await service.getCharacteristic(WRITE_CHAR);
+  notifyChar.addEventListener('characteristicvaluechanged', onNotify);
+  await notifyChar.startNotifications();
+}
+
+async function onConnected() {
+  showError('');
+  setStatus(`Connected to ${device.name}`, 'on');
+  saveDeviceId(device.id);
+  $('connectBtn').hidden = true;
+  $('disconnectBtn').hidden = false;
+  $('intro').hidden = true;
+  $('dash').hidden = false;
+  await readInfo();
+  await poll();
+}
+
+async function connect() {
+  showError('');
+  setStatus(`Connecting to ${device.name}…`, 'busy');
+  $('connectBtn').disabled = true;
+  try {
+    await openGatt(device);
+  } catch (err) {
+    showError(`Could not connect to ${device.name}: ${err.message}`);
     setStatus('Disconnected');
     $('connectBtn').disabled = false;
-    if (device?.gatt.connected) device.gatt.disconnect();
+    $('connectBtn').textContent = 'Reconnect';
+    if (device.gatt.connected) device.gatt.disconnect();
+    return;
   }
+  await onConnected();
 }
 
 function disconnect() {
@@ -326,6 +429,7 @@ function onDisconnected() {
     pending.reject(new Error('disconnected'));
     pending = null;
   }
+  if (watchAbort) return; // an auto-connect attempt failed; the retry loop owns the UI
   setStatus('Disconnected');
   log('err', 'disconnected');
   $('connectBtn').hidden = false;
@@ -440,9 +544,10 @@ function renderStats() {
   $('frameStats').textContent = `${stats.ok} ok / ${stats.bad} bad / ${stats.timeout} timeout`;
 }
 
-$('connectBtn').addEventListener('click', connect);
+$('connectBtn').addEventListener('click', onConnectClick);
 $('disconnectBtn').addEventListener('click', disconnect);
 $('interval').addEventListener('change', () => { if (writeChar && pollTimer) poll(); });
+autoConnect();
 </script>
 </body>
 </html>
