@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daly BMS Monitor</title>
+<style>
+  :root {
+    --bg: #f4f5f7;
+    --panel: #ffffff;
+    --text: #1b1f24;
+    --muted: #6a7280;
+    --border: #dfe2e7;
+    --accent: #1f7a5a;
+    --accent-soft: #d8efe6;
+    --warn: #b7791f;
+    --bad: #c0392b;
+    --bar: #3b82c4;
+    --bar-hi: #c0392b;
+    --bar-lo: #b7791f;
+    --mono: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418;
+      --panel: #1a1e24;
+      --text: #e6e8eb;
+      --muted: #8b93a0;
+      --border: #2a3039;
+      --accent: #4cc38a;
+      --accent-soft: #1d3a2d;
+      --warn: #e0a64a;
+      --bad: #ef6b5b;
+      --bar: #5a9fe0;
+      --bar-hi: #ef6b5b;
+      --bar-lo: #e0a64a;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 880px; margin: 0 auto; padding: 16px; }
+  header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  h1 { font-size: 18px; margin: 0; flex: 1; }
+  .status { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.on { background: var(--accent); }
+  .dot.busy { background: var(--warn); }
+  button {
+    font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--accent); background: var(--accent); color: #fff;
+  }
+  button.secondary { background: transparent; color: var(--text); border-color: var(--border); }
+  button:disabled { opacity: .5; cursor: default; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+  .hero { display: grid; grid-template-columns: auto 1fr; gap: 24px; align-items: center; }
+  .soc { position: relative; width: 132px; height: 132px; }
+  .soc svg { transform: rotate(-90deg); }
+  .soc .val { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+  .soc .val b { font-size: 25px; font-variant-numeric: tabular-nums; }
+  .soc .val span { font-size: 12px; color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px 16px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat .v small { font-size: 13px; font-weight: 400; color: var(--muted); margin-left: 2px; }
+  .chg { color: var(--accent); }
+  .dsg { color: var(--warn); }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .chip.bad { border-color: var(--bad); color: var(--bad); }
+  .cells { display: grid; gap: 6px; }
+  .cell { display: grid; grid-template-columns: 34px 1fr 64px 56px; gap: 10px; align-items: center; font-variant-numeric: tabular-nums; }
+  .cell .n { color: var(--muted); font-size: 13px; }
+  .cell .track { height: 14px; background: var(--bg); border-radius: 4px; overflow: hidden; }
+  .cell .fill { height: 100%; background: var(--bar); transition: width .4s; }
+  .cell.hi .fill { background: var(--bar-hi); }
+  .cell.lo .fill { background: var(--bar-lo); }
+  .cell .mv, .cell .dev { text-align: right; font-family: var(--mono); font-size: 13px; }
+  .cell .dev { color: var(--muted); }
+  .cellsum { margin-top: 10px; font-size: 13px; color: var(--muted); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .two .panel { margin-bottom: 0; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  #log {
+    font-family: var(--mono); font-size: 12px; max-height: 280px; overflow: auto; white-space: pre-wrap;
+    word-break: break-all; margin: 10px 0 0; padding: 10px; background: var(--bg); border-radius: 8px;
+  }
+  .log-tx { color: var(--bar); }
+  .log-rx { color: var(--accent); }
+  .log-err { color: var(--bad); }
+  .note { font-size: 13px; color: var(--muted); }
+  .note code { font-family: var(--mono); }
+  #error { color: var(--bad); font-size: 14px; margin-bottom: 12px; }
+  #dash[hidden] { display: none; }
+  @media (max-width: 600px) {
+    .hero { grid-template-columns: 1fr; justify-items: center; }
+    .two { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Daly BMS Monitor</h1>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">Disconnected</span></div>
+    <button id="connectBtn">Connect</button>
+    <button id="disconnectBtn" class="secondary" hidden>Disconnect</button>
+  </header>
+
+  <div id="error" hidden></div>
+
+  <p class="note" id="intro">
+    Close the Daly phone app first — the BMS accepts only one connection.
+    Requires Chromium with Web Bluetooth, served from <code>localhost</code> or HTTPS.
+  </p>
+
+  <section id="dash" hidden>
+    <div class="panel hero">
+      <div class="soc">
+        <svg width="132" height="132" viewBox="0 0 132 132">
+          <circle cx="66" cy="66" r="56" fill="none" stroke="var(--bg)" stroke-width="12"/>
+          <circle id="socArc" cx="66" cy="66" r="56" fill="none" stroke="var(--accent)" stroke-width="12"
+                  stroke-linecap="round" stroke-dasharray="351.86" stroke-dashoffset="351.86"
+                  style="transition: stroke-dashoffset .5s"/>
+        </svg>
+        <div class="val"><b id="soc">–</b><span>state of charge</span></div>
+      </div>
+      <div>
+        <div class="stats">
+          <div class="stat"><div class="k">Voltage</div><div class="v" id="voltage">–</div></div>
+          <div class="stat"><div class="k">Current</div><div class="v" id="current">–</div></div>
+          <div class="stat"><div class="k">Power</div><div class="v" id="power">–</div></div>
+          <div class="stat"><div class="k">Remaining</div><div class="v" id="remaining">–</div></div>
+          <div class="stat"><div class="k">Temperature</div><div class="v" id="temp">–</div></div>
+          <div class="stat"><div class="k">Cycles</div><div class="v" id="cycles">–</div></div>
+        </div>
+        <div class="chips" style="margin-top:14px">
+          <span class="chip" id="chipChg">Charge MOS</span>
+          <span class="chip" id="chipDsg">Discharge MOS</span>
+          <span class="chip" id="chipBal">Balancing</span>
+          <span class="chip" id="chipFault" hidden></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Cells</h2>
+      <div class="cells" id="cells"></div>
+      <div class="cellsum" id="cellsum"></div>
+    </div>
+
+    <div class="two">
+      <div class="panel">
+        <h2>Device</h2>
+        <dl class="kv" id="device"></dl>
+      </div>
+      <div class="panel">
+        <h2>Polling</h2>
+        <dl class="kv">
+          <dt>Interval</dt>
+          <dd>
+            <select id="interval">
+              <option value="1000">1 s</option>
+              <option value="2000" selected>2 s</option>
+              <option value="5000">5 s</option>
+              <option value="10000">10 s</option>
+            </select>
+          </dd>
+          <dt>Last update</dt><dd id="lastUpdate">–</dd>
+          <dt>Frames</dt><dd id="frameStats">0 ok / 0 bad / 0 timeout</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <div class="panel" style="margin-top:16px">
+    <details>
+      <summary>Raw frame log</summary>
+      <div id="log"></div>
+    </details>
+  </div>
+</main>
+
+<script type="module">
+import {
+  SERVICE, NOTIFY_CHAR, WRITE_CHAR, STATUS_REQ, INFO_REQ,
+  FrameAssembler, readRequest, decodeStatus, decodeInfo, toHex,
+} from './daly.js';
+
+const RESPONSE_TIMEOUT_MS = 2000;
+const LOG_LINES = 200;
+
+const $ = (id) => document.getElementById(id);
+
+let device = null;
+let writeChar = null;
+let pollTimer = null;
+let pending = null; // { resolve, reject, timer }
+let queue = Promise.resolve();
+const asm = new FrameAssembler();
+const stats = { ok: 0, bad: 0, timeout: 0 };
+
+function setStatus(text, state) {
+  $('statusText').textContent = text;
+  $('dot').className = 'dot' + (state ? ' ' + state : '');
+}
+
+function showError(msg) {
+  $('error').hidden = !msg;
+  $('error').textContent = msg || '';
+}
+
+function log(kind, text) {
+  const el = $('log');
+  const line = document.createElement('div');
+  line.className = 'log-' + kind;
+  line.textContent = `${new Date().toLocaleTimeString()} ${kind === 'tx' ? '→' : kind === 'rx' ? '←' : '!'} ${text}`;
+  el.append(line);
+  while (el.childElementCount > LOG_LINES) el.firstChild.remove();
+  el.scrollTop = el.scrollHeight;
+}
+
+function onNotify(event) {
+  const chunk = new Uint8Array(event.target.value.buffer.slice(0));
+  log('rx', `(${chunk.length}B) ${toHex(chunk)}`);
+  for (const res of asm.push(chunk)) {
+    if (!res.ok) {
+      stats.bad++;
+      log('err', res.error);
+      continue;
+    }
+    if (pending) {
+      clearTimeout(pending.timer);
+      pending.resolve(res.frame);
+      pending = null;
+    }
+  }
+  renderStats();
+}
+
+// Sends one read request and resolves with its response frame.
+// Requests are serialized: the BMS answers one at a time.
+function request({ reg, count }) {
+  const run = async () => {
+    const frame = readRequest(reg, count);
+    asm.reset();
+    const response = new Promise((resolve, reject) => {
+      pending = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          pending = null;
+          stats.timeout++;
+          renderStats();
+          reject(new Error(`no response to read 0x${reg.toString(16)}×${count}`));
+        }, RESPONSE_TIMEOUT_MS),
+      };
+    });
+    log('tx', toHex(frame));
+    await writeChar.writeValueWithoutResponse(frame);
+    return response;
+  };
+  const p = queue.then(run, run);
+  queue = p.catch(() => {});
+  return p;
+}
+
+async function connect() {
+  showError('');
+  if (!navigator.bluetooth) {
+    showError('Web Bluetooth is not available. Use Chromium over localhost/HTTPS; on Linux enable chrome://flags/#enable-experimental-web-platform-features.');
+    return;
+  }
+  try {
+    if (!device) {
+      device = await navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'DL-' }, { services: [SERVICE] }],
+        optionalServices: [SERVICE],
+      });
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+    }
+    setStatus(`Connecting to ${device.name}…`, 'busy');
+    $('connectBtn').disabled = true;
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    const notifyChar = await service.getCharacteristic(NOTIFY_CHAR);
+    writeChar = await service.getCharacteristic(WRITE_CHAR);
+    notifyChar.addEventListener('characteristicvaluechanged', onNotify);
+    await notifyChar.startNotifications();
+
+    setStatus(`Connected to ${device.name}`, 'on');
+    $('connectBtn').hidden = true;
+    $('disconnectBtn').hidden = false;
+    $('intro').hidden = true;
+    $('dash').hidden = false;
+
+    await readInfo();
+    await poll();
+  } catch (err) {
+    if (err.name !== 'NotFoundError') showError(err.message); // NotFoundError = chooser cancelled
+    setStatus('Disconnected');
+    $('connectBtn').disabled = false;
+    if (device?.gatt.connected) device.gatt.disconnect();
+  }
+}
+
+function disconnect() {
+  stopPolling();
+  device?.gatt.disconnect();
+}
+
+function onDisconnected() {
+  stopPolling();
+  writeChar = null;
+  if (pending) {
+    clearTimeout(pending.timer);
+    pending.reject(new Error('disconnected'));
+    pending = null;
+  }
+  setStatus('Disconnected');
+  log('err', 'disconnected');
+  $('connectBtn').hidden = false;
+  $('connectBtn').disabled = false;
+  $('connectBtn').textContent = 'Reconnect';
+  $('disconnectBtn').hidden = true;
+}
+
+function stopPolling() {
+  clearTimeout(pollTimer);
+  pollTimer = null;
+}
+
+async function poll() {
+  stopPolling();
+  if (!writeChar) return;
+  try {
+    const frame = await request(STATUS_REQ);
+    stats.ok++;
+    renderStatus(decodeStatus(frame));
+    $('lastUpdate').textContent = new Date().toLocaleTimeString();
+    showError('');
+  } catch (err) {
+    log('err', err.message);
+    if (writeChar) showError(err.message);
+  }
+  renderStats();
+  if (writeChar) pollTimer = setTimeout(poll, Number($('interval').value));
+}
+
+async function readInfo() {
+  const rows = [['Name', device.name], ['Id', device.id]];
+  try {
+    const info = decodeInfo(await request(INFO_REQ));
+    stats.ok++;
+    info.forEach((s, i) => rows.push([['Hardware', 'Software', 'Date'][i] ?? `Field ${i + 1}`, s]));
+  } catch (err) {
+    log('err', err.message);
+  }
+  $('device').replaceChildren(...rows.flatMap(([k, v]) => {
+    const dt = document.createElement('dt');
+    const dd = document.createElement('dd');
+    dt.textContent = k;
+    dd.textContent = v;
+    return [dt, dd];
+  }));
+}
+
+const fmt = (v, digits, unit) => `${v.toFixed(digits)}<small>${unit}</small>`;
+
+function renderStatus(s) {
+  $('soc').textContent = `${s.soc.toFixed(1)}%`;
+  const circ = 351.86;
+  $('socArc').style.strokeDashoffset = circ * (1 - Math.min(Math.max(s.soc, 0), 100) / 100);
+
+  $('voltage').innerHTML = fmt(s.voltage, 1, 'V');
+  const cur = $('current');
+  cur.innerHTML = fmt(s.current, 1, 'A');
+  cur.className = 'v' + (s.current > 0 ? ' chg' : s.current < 0 ? ' dsg' : '');
+  $('power').innerHTML = fmt(s.power, 0, 'W');
+  $('remaining').innerHTML = fmt(s.remainingAh, 1, 'Ah');
+  $('temp').innerHTML = s.temps.length
+    ? s.temps.map((t) => `${t}`).join(' / ') + '<small>°C</small>'
+    : '–';
+  $('cycles').textContent = s.cycles;
+
+  $('chipChg').classList.toggle('on', s.chargeMos);
+  $('chipDsg').classList.toggle('on', s.dischargeMos);
+  $('chipBal').classList.toggle('on', s.balancing);
+  const fault = s.faultRaw.some(Boolean);
+  $('chipFault').hidden = !fault;
+  $('chipFault').className = 'chip bad';
+  $('chipFault').textContent = `Fault flags ${s.faultRaw.map((v) => v.toString(16).padStart(4, '0')).join(' ')}`;
+
+  renderCells(s);
+}
+
+function renderCells(s) {
+  // Bars are zoomed to the cell spread (at least 50 mV wide) so imbalance is visible;
+  // the full 0–100% range would make a few mV of difference invisible.
+  const max = Math.max(...s.cells);
+  const min = Math.min(...s.cells);
+  const span = Math.max(max - min, 0.05);
+  const lo = min - span * 0.5;
+  const hi = max + span * 0.1;
+  const avg = s.cells.reduce((a, b) => a + b, 0) / s.cells.length;
+  const wrap = $('cells');
+  if (wrap.childElementCount !== s.cells.length) {
+    wrap.replaceChildren(...s.cells.map((_, i) => {
+      const row = document.createElement('div');
+      row.className = 'cell';
+      row.innerHTML = `<span class="n">#${i + 1}</span><div class="track"><div class="fill"></div></div><span class="mv"></span><span class="dev"></span>`;
+      return row;
+    }));
+  }
+  s.cells.forEach((v, i) => {
+    const row = wrap.children[i];
+    const spread = max !== min;
+    row.classList.toggle('hi', spread && v === max);
+    row.classList.toggle('lo', spread && v === min);
+    row.querySelector('.fill').style.width = `${((v - lo) / (hi - lo)) * 100}%`;
+    row.querySelector('.mv').textContent = v.toFixed(3) + ' V';
+    const dev = Math.round((v - avg) * 1000);
+    row.querySelector('.dev').textContent = `${dev > 0 ? '+' : ''}${dev} mV`;
+  });
+  $('cellsum').textContent =
+    `${s.cells.length} cells · bars zoomed to spread · min ${s.cellMin.toFixed(3)} V · max ${s.cellMax.toFixed(3)} V · ` +
+    `avg ${s.cellAvg.toFixed(3)} V · Δ ${(s.cellDelta * 1000).toFixed(0)} mV`;
+}
+
+function renderStats() {
+  $('frameStats').textContent = `${stats.ok} ok / ${stats.bad} bad / ${stats.timeout} timeout`;
+}
+
+$('connectBtn').addEventListener('click', connect);
+$('disconnectBtn').addEventListener('click', disconnect);
+$('interval').addEventListener('change', () => { if (writeChar && pollTimer) poll(); });
+</script>
+</body>
+</html>
