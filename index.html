@@ -99,6 +99,13 @@
   .log-err { color: var(--bad); }
   .note { font-size: 13px; color: var(--muted); }
   .note code { font-family: var(--mono); }
+  .note p { margin: 0 0 8px; }
+  .flags { margin: 0 0 16px; padding-left: 20px; }
+  .flags li { margin-bottom: 6px; }
+  .flags code { user-select: all; overflow-wrap: anywhere; color: var(--text); }
+  .flag-state { margin-left: 6px; font-weight: 600; }
+  .flag-state.ok { color: var(--accent); }
+  .flag-state.missing { color: var(--bad); }
   #error { color: var(--bad); font-size: 14px; margin-bottom: 12px; }
   #dash[hidden] { display: none; }
   @media (max-width: 600px) {
@@ -118,10 +125,23 @@
 
   <div id="error" hidden></div>
 
-  <p class="note" id="intro">
-    Close the Daly phone app first — the BMS accepts only one connection.
-    Requires Chromium with Web Bluetooth, served from <code>localhost</code> or HTTPS.
-  </p>
+  <div class="note" id="intro">
+    <p>Close the Daly phone app first — the BMS accepts only one connection.</p>
+    <p>
+      Requires Chrome or Chromium. On Linux, open each flag below (copy it into the address bar),
+      set it to <b>Enabled</b>, and restart the browser:
+    </p>
+    <ul class="flags">
+      <li id="flagBluetooth">
+        <code>chrome://flags/#enable-experimental-web-platform-features</code>
+        — Web Bluetooth itself<span class="flag-state"></span>
+      </li>
+      <li id="flagPermissions">
+        <code>chrome://flags/#enable-web-bluetooth-new-permissions-backend</code>
+        — remembers the device so the page can auto-connect on load<span class="flag-state"></span>
+      </li>
+    </ul>
+  </div>
 
   <section id="dash" hidden>
     <div class="panel hero">
@@ -547,6 +567,15 @@ function renderStats() {
 $('connectBtn').addEventListener('click', onConnectClick);
 $('disconnectBtn').addEventListener('click', disconnect);
 $('interval').addEventListener('change', () => { if (writeChar && pollTimer) poll(); });
+// Show whether each flag's feature is present in this browser.
+function markFlag(id, ok) {
+  const el = document.querySelector(`#${id} .flag-state`);
+  el.textContent = ok ? '✓ active' : '✗ not active';
+  el.className = 'flag-state ' + (ok ? 'ok' : 'missing');
+}
+markFlag('flagBluetooth', !!navigator.bluetooth);
+markFlag('flagPermissions', !!navigator.bluetooth?.getDevices);
+
 autoConnect();
 </script>
 </body>
