@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Daly BMS Monitor</title>
+<meta name="theme-color" content="#1f7a5a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <style>
   :root {
     --bg: #f4f5f7;
@@ -121,15 +125,27 @@
     <div class="status"><span class="dot" id="dot"></span><span id="statusText">Disconnected</span></div>
     <button id="connectBtn">Connect</button>
     <button id="disconnectBtn" class="secondary" hidden>Disconnect</button>
+    <button id="installBtn" class="secondary" hidden>Install app</button>
   </header>
+
+  <div class="panel note" id="installHelp" hidden>
+    <p><b>Install from the browser menu.</b> Chrome hasn't offered a one-tap install here yet, so:</p>
+    <ul class="flags">
+      <li>Android: tap <b>⋮</b> → <b>Add to Home screen</b> (or <b>Install app</b>) → <b>Install</b>.</li>
+      <li>Desktop Chrome/Chromium: <b>⋮</b> → <b>Cast, save, and share</b> → <b>Install page as app…</b>,
+        or the install icon at the right end of the address bar.</li>
+    </ul>
+    <button class="secondary" id="installHelpClose">Close</button>
+  </div>
 
   <div id="error" hidden></div>
 
   <div class="note" id="intro">
     <p>Close the Daly phone app first — the BMS accepts only one connection.</p>
     <p>
-      Requires Chrome or Chromium. On Linux, open each flag below (copy it into the address bar),
-      set it to <b>Enabled</b>, and restart the browser:
+      Requires Chrome or Chromium. On Android, Web Bluetooth works out of the box; only the second
+      flag is needed for auto-connect. On Linux, enable both. Open each flag (copy it into the
+      address bar), set it to <b>Enabled</b>, and restart the browser:
     </p>
     <ul class="flags">
       <li id="flagBluetooth">
@@ -230,6 +246,9 @@ let pollTimer = null;
 let pending = null; // { resolve, reject, timer }
 let queue = Promise.resolve();
 let watchAbort = null; // set while waiting for a remembered device to advertise
+let userDisconnected = false; // Disconnect was clicked: don't reconnect on return to foreground
+let wakeLock = null;
+let installPrompt = null; // deferred beforeinstallprompt event
 const asm = new FrameAssembler();
 const stats = { ok: 0, bad: 0, timeout: 0 };
 
@@ -353,7 +372,11 @@ async function autoConnect() {
   const d = known.find((k) => k.id === savedId) ?? known.find((k) => k.name?.startsWith('DL-'));
   if (!d || device) return;
   useDevice(d);
+  await reconnectLoop(d);
+}
 
+// Retries connecting to a known device until it works or the user picks another one.
+async function reconnectLoop(d) {
   watchAbort = new AbortController();
   const { signal } = watchAbort;
   $('connectBtn').textContent = 'Choose device';
@@ -408,6 +431,7 @@ async function openGatt(d) {
 }
 
 async function onConnected() {
+  userDisconnected = false;
   showError('');
   setStatus(`Connected to ${device.name}`, 'on');
   saveDeviceId(device.id);
@@ -415,6 +439,7 @@ async function onConnected() {
   $('disconnectBtn').hidden = false;
   $('intro').hidden = true;
   $('dash').hidden = false;
+  keepScreenOn();
   await readInfo();
   await poll();
 }
@@ -437,6 +462,7 @@ async function connect() {
 }
 
 function disconnect() {
+  userDisconnected = true;
   stopPolling();
   device?.gatt.disconnect();
 }
@@ -449,6 +475,7 @@ function onDisconnected() {
     pending.reject(new Error('disconnected'));
     pending = null;
   }
+  releaseScreen();
   if (watchAbort) return; // an auto-connect attempt failed; the retry loop owns the UI
   setStatus('Disconnected');
   log('err', 'disconnected');
@@ -575,6 +602,62 @@ function markFlag(id, ok) {
 }
 markFlag('flagBluetooth', !!navigator.bluetooth);
 markFlag('flagPermissions', !!navigator.bluetooth?.getDevices);
+
+// Keep the screen on while connected: Android suspends the page (and drops the BLE
+// link) when the screen turns off. Wake locks are released whenever the page is
+// hidden, so this is re-requested on return to the foreground.
+async function keepScreenOn() {
+  if (!navigator.wakeLock || wakeLock || document.visibilityState !== 'visible') return;
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => { wakeLock = null; });
+  } catch (err) {
+    log('err', `wake lock: ${err.message}`);
+  }
+}
+
+function releaseScreen() {
+  wakeLock?.release();
+  wakeLock = null;
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !device) return;
+  if (device.gatt.connected) {
+    keepScreenOn();
+  } else if (!watchAbort && !userDisconnected && !$('connectBtn').disabled) {
+    log('err', 'back in foreground, reconnecting');
+    reconnectLoop(device);
+  }
+});
+
+// Install: use Chrome's prompt when it offers one, otherwise explain the menu route.
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches;
+$('installBtn').hidden = isStandalone();
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  installPrompt = event;
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  $('installBtn').hidden = true;
+  $('installHelp').hidden = true;
+});
+$('installBtn').addEventListener('click', async () => {
+  if (!installPrompt) {
+    $('installHelp').hidden = false;
+    return;
+  }
+  installPrompt.prompt();
+  const { outcome } = await installPrompt.userChoice;
+  installPrompt = null;
+  if (outcome === 'accepted') $('installBtn').hidden = true;
+});
+$('installHelpClose').addEventListener('click', () => { $('installHelp').hidden = true; });
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch((err) => log('err', `service worker: ${err.message}`));
+}
 
 autoConnect();
 </script>

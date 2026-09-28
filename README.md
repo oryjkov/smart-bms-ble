@@ -26,7 +26,21 @@ Older modules using the `0xA5` frame protocol are not supported.
 3. After the first connection, the page remembers the device and connects to it
    automatically on load.
 
-On Linux, enable these in `chrome://flags` and restart the browser:
+### Install as an app
+
+The page is a PWA: tap **Install app** (or use Chrome's menu → *Add to Home
+screen*) to get a home-screen icon that opens full-screen and works offline
+after the first load. While connected it keeps the screen on, and it reconnects
+when brought back to the foreground — Android suspends the page (and drops the
+Bluetooth link) when it goes to the background.
+
+iOS is not supported: Safari has no Web Bluetooth.
+
+### Browser flags
+
+Web Bluetooth works out of the box in Chrome for Android; auto-connect needs the
+permissions flag below. On Linux, enable both in `chrome://flags` and restart the
+browser:
 
 - `#enable-experimental-web-platform-features` (Web Bluetooth)
 - `#enable-web-bluetooth-new-permissions-backend` (remember the device for
